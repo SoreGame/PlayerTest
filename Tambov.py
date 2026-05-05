@@ -9,9 +9,12 @@ import signal
 
 # ==================== НАСТРОЙКИ =====================
 def find_sound(name):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    content_dir = os.path.join(base_dir, "content")
+
     for ext in [".mp3", ".wav"]:
-        path = f"/content/{name}{ext}"
-        if os.path.exists(path):
+        path = os.path.join(content_dir, f"{name}{ext}")
+        if os.path.isfile(path):
             return path
     raise FileNotFoundError(f"Файл {name}.mp3 или {name}.wav не найден")
 
