@@ -44,7 +44,7 @@ def get_player(sound_file):
     return ["ffplay", "-nodisp", "-autoexit", sound_file]
 
 def stop_sound():
-    global current_player
+    global current_player, last_play_time
 
     with audio_lock:
         if current_player is None:
@@ -56,6 +56,8 @@ def stop_sound():
             pass
         finally:
             current_player = None
+            # Разрешаем быстрое повторное включение после отжатия кнопки
+            last_play_time = 0.0
 
 def play_sound(sound_file, index):
 
@@ -65,7 +67,8 @@ def play_sound(sound_file, index):
 
     with audio_lock:
 
-        if now - last_play_time < LOCK_TIMEOUT:
+        # Защита от слишком частых перезапусков только пока звук реально играет
+        if current_player is not None and (now - last_play_time < LOCK_TIMEOUT):
             print(f"   Игнор — слишком быстро ({now - last_play_time:.2f} сек)")
             return
 
