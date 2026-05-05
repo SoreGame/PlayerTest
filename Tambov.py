@@ -28,80 +28,83 @@ SOUNDS = [
     find_sound("4")
 ]
 
-ON_DELAY_SEC = 0.5
-POLL_INTERVAL_SEC = 0.02
+DEBOUNCE_TIME = 0.25
+LOCK_TIMEOUT = 1.5
 
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====================
 
 audio_lock = threading.Lock()
+last_play_time = 0.0
 current_player = None
 current_led = None
-current_index = None
 
 # ==================== ФУНКЦИИ =====================
 def get_player(sound_file):
 
     if sound_file.endswith(".mp3"):
-        return ["mpg123", "--loop", "-1", sound_file]
+        return ["mpg123", sound_file]
 
     if sound_file.endswith(".wav"):
-        return ["aplay", "--loop=-1", sound_file]
+        return ["aplay", sound_file]
 
-    return ["ffplay", "-nodisp", "-autoexit", "-stream_loop", "-1", sound_file]
+    return ["ffplay", "-nodisp", "-autoexit", sound_file]
 
-def _stop_locked():
-    global current_player, current_led, current_index
+def play_sound(sound_file, index):
 
-    if current_player is not None:
-        try:
-            os.killpg(current_player.pid, signal.SIGTERM)
-            current_player.wait(timeout=0.5)
-        except Exception:
-            pass
-        current_player = None
+    global last_play_time, current_player, current_led
 
-    if current_led is not None:
-        try:
-            wiringpi.digitalWrite(current_led, 0)
-        except Exception:
-            pass
-        current_led = None
-
-    current_index = None
-
-
-def start_sound(index):
-
-    global current_player, current_led, current_index
-
-    sound_file = SOUNDS[index]
-    led_pin = LED_LINES[index]
+    now = time.time()
 
     with audio_lock:
-        if current_index == index and current_player is not None:
+
+        if now - last_play_time < LOCK_TIMEOUT:
+            print(f"   Игнор — слишком быстро ({now - last_play_time:.2f} сек)")
             return
 
-        _stop_locked()
+        last_play_time = now
 
-        try:
-            wiringpi.digitalWrite(led_pin, 1)
-        except Exception:
-            pass
+        led_pin = LED_LINES[index]
+
+        print(f"   → Запускаю: {sound_file}")
+
+        # выключаем предыдущую подсветку
+        if current_led is not None:
+            wiringpi.digitalWrite(current_led, 0)
+
+        # останавливаем старый звук
+        if current_player is not None:
+            try:
+                os.killpg(current_player.pid, signal.SIGTERM)
+                current_player.wait(timeout=0.5)
+            except:
+                pass
+
+        if led_pin == current_led:
+            return
+        # включаем новую подсветку
+        wiringpi.digitalWrite(led_pin, 1)
         current_led = led_pin
-        current_index = index
 
+        # запускаем звук
         current_player = subprocess.Popen(
             get_player(sound_file),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid,
+            preexec_fn=os.setsid
         )
 
+    # ждём окончания звука
 
-def stop_sound():
+        player = current_player
+    
+    # ждём окончания
+    player.wait()
+    
     with audio_lock:
-        _stop_locked()
+        if current_player == player and current_led == led_pin:
+            wiringpi.digitalWrite(led_pin, 0)
+            current_led = None
 # ==================== ОСНОВНОЙ КОД =====================
 
 def main():
@@ -126,49 +129,34 @@ def main():
         wiringpi.pinMode(pin, wiringpi.OUTPUT)
         wiringpi.digitalWrite(pin, 0)
 
-    press_start_times = [None] * len(BUTTON_LINES)  # when stable "pressed" started
+    prev_values = [1] * len(BUTTON_LINES)
+    last_change_times = [0.0] * len(BUTTON_LINES)
 
     try:
         while True:
-            now = time.time()
 
-            active_index = None
             for i, pin in enumerate(BUTTON_LINES):
+
                 val = wiringpi.digitalRead(pin)
-                pressed = (val == 0)  # PUD_UP => pressed pulls low
+                now = time.time()
+                # нажатие (1 -> 0)
+                if val == 0 and prev_values[i] == 1 and (now - last_change_times[i] > DEBOUNCE_TIME):
 
-                if pressed:
-                    if press_start_times[i] is None:
-                        press_start_times[i] = now
-                    if active_index is None:
-                        active_index = i
-                else:
-                    press_start_times[i] = None
+                    last_change_times[i] = now
+                    sound = SOUNDS[i]
 
-            # no signal => audio off immediately
-            if active_index is None:
-                stop_sound()
-                time.sleep(POLL_INTERVAL_SEC)
-                continue
+                    threading.Thread(
+                        target=play_sound,
+                        args=(sound, i),
+                        daemon=True
+                    ).start()
 
-            # signal exists, but turn on only after stable ON_DELAY_SEC
-            if press_start_times[active_index] is not None and (now - press_start_times[active_index] >= ON_DELAY_SEC):
-                start_sound(active_index)
+                prev_values[i] = val
 
-            # if currently playing some track but its button signal is gone => stop immediately
-            with audio_lock:
-                idx = current_index
-            if idx is not None:
-                # still pressed?
-                val = wiringpi.digitalRead(BUTTON_LINES[idx])
-                if val != 0:
-                    stop_sound()
-
-            time.sleep(POLL_INTERVAL_SEC)
+            time.sleep(0.02)
 
     except KeyboardInterrupt:
         print("\nВыход")
-        stop_sound()
 
 
 if __name__ == "__main__":
