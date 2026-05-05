@@ -8,3 +8,12 @@ amixer -c 0 sset 'Right Output Mixer DACR' on
 amixer -c 0 sset 'digital volume' 0
 amixer -c 0 sset 'LINEOUT volume' 20
 ```
+
+```
+sudo alsactl store
+```
+
+```
+systemctl status alsa-restore.service
+sudo systemctl enable --now alsa-restore.service
+```
