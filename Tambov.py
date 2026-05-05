@@ -19,7 +19,6 @@ def find_sound(name):
     raise FileNotFoundError(f"Файл {name}.mp3 или {name}.wav не найден")
 
 BUTTON_LINES = [2, 6, 17, 8]  # wiringPi номера пинов
-LED_LINES = [16, 13, 10, 9]
 
 SOUNDS = [
     find_sound("1"),
@@ -37,7 +36,6 @@ LOCK_TIMEOUT = 1.5
 audio_lock = threading.Lock()
 last_play_time = 0.0
 current_player = None
-current_led = None
 
 # ==================== ФУНКЦИИ =====================
 def get_player(sound_file):
@@ -52,7 +50,7 @@ def get_player(sound_file):
 
 def play_sound(sound_file, index):
 
-    global last_play_time, current_player, current_led
+    global last_play_time, current_player
 
     now = time.time()
 
@@ -64,13 +62,7 @@ def play_sound(sound_file, index):
 
         last_play_time = now
 
-        led_pin = LED_LINES[index]
-
         print(f"   → Запускаю: {sound_file}")
-
-        # выключаем предыдущую подсветку
-        if current_led is not None:
-            wiringpi.digitalWrite(current_led, 0)
 
         # останавливаем старый звук
         if current_player is not None:
@@ -79,12 +71,6 @@ def play_sound(sound_file, index):
                 current_player.wait(timeout=0.5)
             except:
                 pass
-
-        if led_pin == current_led:
-            return
-        # включаем новую подсветку
-        wiringpi.digitalWrite(led_pin, 1)
-        current_led = led_pin
 
         # запускаем звук
         current_player = subprocess.Popen(
@@ -100,11 +86,10 @@ def play_sound(sound_file, index):
     
     # ждём окончания
     player.wait()
-    
+
     with audio_lock:
-        if current_player == player and current_led == led_pin:
-            wiringpi.digitalWrite(led_pin, 0)
-            current_led = None
+        if current_player == player:
+            current_player = None
 # ==================== ОСНОВНОЙ КОД =====================
 
 def main():
@@ -124,10 +109,6 @@ def main():
     for pin in BUTTON_LINES:
         wiringpi.pinMode(pin, wiringpi.INPUT)
         wiringpi.pullUpDnControl(pin, wiringpi.PUD_UP)
-        
-    for pin in LED_LINES:
-        wiringpi.pinMode(pin, wiringpi.OUTPUT)
-        wiringpi.digitalWrite(pin, 0)
 
     prev_values = [1] * len(BUTTON_LINES)
     last_change_times = [0.0] * len(BUTTON_LINES)
