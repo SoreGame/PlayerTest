@@ -18,14 +18,9 @@ def find_sound(name):
             return path
     raise FileNotFoundError(f"Файл {name}.mp3 или {name}.wav не найден")
 
-BUTTON_LINES = [2, 6, 17, 8]  # wiringPi номера пинов
+BUTTON_LINES = [2]  # wiringPi номер пина (1 кнопка)
 
-SOUNDS = [
-    find_sound("1"),
-    find_sound("2"),
-    find_sound("3"),
-    find_sound("4")
-]
+SOUNDS = [find_sound("1")]
 
 DEBOUNCE_TIME = 0.25
 LOCK_TIMEOUT = 1.5
@@ -47,6 +42,20 @@ def get_player(sound_file):
         return ["aplay", sound_file]
 
     return ["ffplay", "-nodisp", "-autoexit", sound_file]
+
+def stop_sound():
+    global current_player
+
+    with audio_lock:
+        if current_player is None:
+            return
+        try:
+            os.killpg(current_player.pid, signal.SIGTERM)
+            current_player.wait(timeout=0.5)
+        except:
+            pass
+        finally:
+            current_player = None
 
 def play_sound(sound_file, index):
 
@@ -131,6 +140,11 @@ def main():
                         args=(sound, i),
                         daemon=True
                     ).start()
+
+                # отжатие (0 -> 1) — гасим звук с антидребезгом
+                if val == 1 and prev_values[i] == 0 and (now - last_change_times[i] > DEBOUNCE_TIME):
+                    last_change_times[i] = now
+                    stop_sound()
 
                 prev_values[i] = val
 
