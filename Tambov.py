@@ -20,7 +20,7 @@ def find_sound(name):
 
 # Одна кнопка, одна дорожка.
 BUTTON_PIN = 2
-SOUND_FILE = find_sound("1")
+SOUND_FILE = find_sound("AGAPKIN")
 
 LOCK_TIMEOUT = 1.5
 ON_CONFIRM_TIME = 1.0
