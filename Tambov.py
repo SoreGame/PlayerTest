@@ -22,8 +22,8 @@ def find_sound(name):
 BUTTON_PIN = 2
 SOUND_FILE = find_sound("SHATROV")
 
-LOCK_TIMEOUT = 1.5
-ON_CONFIRM_TIME = 1.0
+LOCK_TIMEOUT = 1
+ON_CONFIRM_TIME = 0.5
 
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====================
