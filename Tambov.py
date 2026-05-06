@@ -12,18 +12,18 @@ def find_sound(name):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     content_dir = os.path.join(base_dir, "content")
 
-    for ext in [".mp3", ".wav"]:
+    for ext in (".mp3", ".wav"):
         path = os.path.join(content_dir, f"{name}{ext}")
         if os.path.isfile(path):
             return path
     raise FileNotFoundError(f"Файл {name}.mp3 или {name}.wav не найден")
 
-BUTTON_LINES = [2]  # wiringPi номер пина (1 кнопка)
+# Одна кнопка, одна дорожка.
+BUTTON_PIN = 2
+SOUND_FILE = find_sound("1")
 
-SOUNDS = [find_sound("1")]
-
-DEBOUNCE_TIME = 0.25
 LOCK_TIMEOUT = 1.5
+ON_CONFIRM_TIME = 1.0
 
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====================
@@ -31,10 +31,11 @@ LOCK_TIMEOUT = 1.5
 audio_lock = threading.Lock()
 last_play_time = 0.0
 current_player = None
+pending_play = False  # "звук должен стартовать", даже если процесс ещё не поднялся
 
 # ==================== ФУНКЦИИ =====================
-def get_player(sound_file):
 
+def get_player(sound_file):
     if sound_file.endswith(".mp3"):
         return ["mpg123", sound_file]
 
@@ -43,31 +44,51 @@ def get_player(sound_file):
 
     return ["ffplay", "-nodisp", "-autoexit", sound_file]
 
+def _stop_player_locked(timeout_s=0.5):
+    """Остановить текущий плеер.
+
+    Важно: запускаем плеер в отдельной process group (`setsid`), чтобы можно было
+    убить *всю* группу (ffplay/mpg123 могут порождать дочерние процессы).
+    """
+    global current_player
+
+    if current_player is None:
+        return
+    try:
+        os.killpg(current_player.pid, signal.SIGTERM)
+        current_player.wait(timeout=timeout_s)
+    except Exception:
+        pass
+    finally:
+        current_player = None
+
+def is_playing():
+    with audio_lock:
+        # pending_play нужен, чтобы отпускание кнопки могло отменить старт
+        # (иначе при дребезге OFF в момент запуска звук может всё равно начаться).
+        return current_player is not None or pending_play
+
 def stop_sound():
-    global current_player, last_play_time
+    global current_player, last_play_time, pending_play
 
     with audio_lock:
-        if current_player is None:
+        pending_play = False
+        _stop_player_locked()
+        # Разрешаем быстрое повторное включение после отжатия кнопки
+        last_play_time = 0.0
+
+def play_sound(sound_file):
+    global last_play_time, current_player, pending_play
+
+    now = time.monotonic()
+
+    with audio_lock:
+        # Если кнопку уже отпустили (или был дребезг OFF) — отменяем старт.
+        if not pending_play:
             return
-        try:
-            os.killpg(current_player.pid, signal.SIGTERM)
-            current_player.wait(timeout=0.5)
-        except:
-            pass
-        finally:
-            current_player = None
-            # Разрешаем быстрое повторное включение после отжатия кнопки
-            last_play_time = 0.0
 
-def play_sound(sound_file, index):
-
-    global last_play_time, current_player
-
-    now = time.time()
-
-    with audio_lock:
-
-        # Защита от слишком частых перезапусков только пока звук реально играет
+        # Защита от слишком частых перезапусков только пока звук реально играет.
+        # Нужна, чтобы дребезг/флаттер не спамил запуском процессов.
         if current_player is not None and (now - last_play_time < LOCK_TIMEOUT):
             print(f"   Игнор — слишком быстро ({now - last_play_time:.2f} сек)")
             return
@@ -76,27 +97,26 @@ def play_sound(sound_file, index):
 
         print(f"   → Запускаю: {sound_file}")
 
-        # останавливаем старый звук
-        if current_player is not None:
-            try:
-                os.killpg(current_player.pid, signal.SIGTERM)
-                current_player.wait(timeout=0.5)
-            except:
-                pass
+        # Останавливаем предыдущий звук, если он ещё играет.
+        _stop_player_locked()
 
-        # запускаем звук
-        current_player = subprocess.Popen(
-            get_player(sound_file),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid
-        )
-
-    # ждём окончания звука
+        try:
+            current_player = subprocess.Popen(
+                get_player(sound_file),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid
+            )
+        except Exception as e:
+            current_player = None
+            pending_play = False
+            print(f"   Ошибка запуска плеера: {e}", file=sys.stderr)
+            return
 
         player = current_player
+        pending_play = False
     
-    # ждём окончания
+    # Ждём окончания вне lock, чтобы основной цикл мог читать кнопку и стопать звук.
     player.wait()
 
     with audio_lock:
@@ -105,12 +125,9 @@ def play_sound(sound_file, index):
 # ==================== ОСНОВНОЙ КОД =====================
 
 def main():
-
     print("Запуск плеера кнопок (WiringPi)")
-    print(f"Линии кнопок: {BUTTON_LINES}")
-
-    for i, s in enumerate(SOUNDS):
-        print(f"  Кнопка {i+1}: {s}")
+    print(f"Пин кнопки: {BUTTON_PIN}")
+    print(f"Звук: {SOUND_FILE}")
 
     print("Нажмите Ctrl+C для выхода")
 
@@ -118,43 +135,51 @@ def main():
     wiringpi.wiringPiSetup()
 
     # настройка пинов
-    for pin in BUTTON_LINES:
-        wiringpi.pinMode(pin, wiringpi.INPUT)
-        wiringpi.pullUpDnControl(pin, wiringpi.PUD_UP)
+    wiringpi.pinMode(BUTTON_PIN, wiringpi.INPUT)
+    wiringpi.pullUpDnControl(BUTTON_PIN, wiringpi.PUD_UP)
 
-    prev_values = [1] * len(BUTTON_LINES)
-    last_change_times = [0.0] * len(BUTTON_LINES)
+    press_start_time = None
+    on_fired = False
 
     try:
         while True:
 
-            for i, pin in enumerate(BUTTON_LINES):
+            val = wiringpi.digitalRead(BUTTON_PIN)
+            now = time.monotonic()
 
-                val = wiringpi.digitalRead(pin)
-                now = time.time()
-                # нажатие (1 -> 0)
-                if val == 0 and prev_values[i] == 1 and (now - last_change_times[i] > DEBOUNCE_TIME):
+            # Включение: подтверждаем "ON" только если val==0 держится непрерывно
+            # больше ON_CONFIRM_TIME (чтобы отфильтровать дребезг).
+            if not is_playing():
+                if val == 0:
+                    if press_start_time is None:
+                        press_start_time = now
+                    if (not on_fired) and (now - press_start_time >= ON_CONFIRM_TIME):
+                        on_fired = True
+                        with audio_lock:
+                            # Помечаем как "в процессе старта", чтобы OFF мог отменить запуск.
+                            global pending_play
+                            pending_play = True
+                        threading.Thread(
+                            target=play_sound,
+                            args=(SOUND_FILE,),
+                            daemon=True
+                        ).start()
+                else:
+                    press_start_time = None
+                    on_fired = False
 
-                    last_change_times[i] = now
-                    sound = SOUNDS[i]
-
-                    threading.Thread(
-                        target=play_sound,
-                        args=(sound, i),
-                        daemon=True
-                    ).start()
-
-                # отжатие (0 -> 1) — гасим звук с антидребезгом
-                if val == 1 and prev_values[i] == 0 and (now - last_change_times[i] > DEBOUNCE_TIME):
-                    last_change_times[i] = now
+            # Выключение: как только увидели "OFF" (val==1) — сразу останавливаем.
+            else:
+                if val == 1:
                     stop_sound()
-
-                prev_values[i] = val
+                    press_start_time = None
+                    on_fired = False
 
             time.sleep(0.02)
 
     except KeyboardInterrupt:
         print("\nВыход")
+        stop_sound()
 
 
 if __name__ == "__main__":
